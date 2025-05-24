@@ -18,40 +18,50 @@ module.exports = async (req, res) => {
   req.on('end', async () => {
     try {
 
-
-      const payload = JSON.parse(rawBody); // Parse the raw body after any potential verification
-
+      const fullWebhookPayload = JSON.parse(rawBody); // Parse the raw body
+      
       // >>> THIS IS THE NEW DEBUG LOGGING LINE <<<
-      console.log("--- Full Webhook Payload Received ---", JSON.stringify(payload, null, 2));
+      console.log("--- Full Webhook Payload Received ---", JSON.stringify(fullWebhookPayload, null, 2));
       // >>> END NEW DEBUG LOGGING LINE <<<
 
-      const { event, task } = payload; 
+      // Access the nested 'payload' object which contains the task data
+      const taskData = fullWebhookPayload.payload; 
 
-      console.log("Received ClickUp Webhook. Event:", event, "Task ID:", task?.id);
+      // Check if taskData is valid before proceeding
+      if (!taskData || !taskData.id) {
+        console.warn("Webhook payload does not contain expected task data structure.");
+        return res.status(200).send("Ignored: Invalid payload structure");
+      }
 
-      // 1. Extract Freshdesk Ticket ID
-      // Using optional chaining defensively, as 'task' or 'custom_fields' might be missing depending on event
-      const freshdeskTicketId = task?.custom_fields?.find(
-        (field) => field.name === "Freshdesk Ticket ID"
-      )?.value;
+      console.log("Received ClickUp Webhook for Task ID:", taskData.id);
+
+      // 1. Extract Freshdesk Ticket ID from 'fields' array using field_id
+      // Replaced placeholder with the actual field_id provided by the user
+      const FRESHDESK_CUSTOM_FIELD_ID = "88b9d9b1-b8b7-49ac-ae87-743c76e1e438"; 
+      const fdTicketField = taskData.fields?.find(
+        (field) => field.field_id === FRESHDESK_CUSTOM_FIELD_ID
+      );
+      const freshdeskTicketId = fdTicketField ? fdTicketField.value : null;
 
       if (!freshdeskTicketId) {
-        console.log("No Freshdesk Ticket ID custom field found or value is empty for task:", task?.id);
+        console.log("No Freshdesk Ticket ID custom field found or value is empty for task:", taskData.id);
         return res.status(200).send("No Freshdesk Ticket ID found");
       }
 
-      // 2. Map ClickUp status → Freshdesk status
+      // 2. Map ClickUp status_id → Freshdesk status
+      // You NEED to replace 'YOUR_TODO_STATUS_ID', 'YOUR_IN_PROGRESS_STATUS_ID', 'YOUR_DONE_STATUS_ID'
+      // with the actual status_ids from your ClickUp workspace.
       const statusMap = {
-        "to do": 2,       // Open
-        "in progress": 3, // Pending
-        "done": 4         // Resolved
+        "YOUR_TODO_STATUS_ID": 2,       // Freshdesk: Open
+        "YOUR_IN_PROGRESS_STATUS_ID": 3, // Freshdesk: Pending
+        "YOUR_DONE_STATUS_ID": 4         // Freshdesk: Resolved
         // Add more mappings if your ClickUp statuses differ or you have more Freshdesk statuses
       };
-      // Ensure task.status.status exists before calling toLowerCase()
-      const clickupStatus = task?.status?.status;
-      const freshdeskStatus = clickupStatus ? statusMap[clickupStatus.toLowerCase()] || 2 : 2; // Default to 'Open' if status not found
+      
+      const clickupStatusId = taskData.status_id;
+      const freshdeskStatus = statusMap[clickupStatusId] || 2; // Default to 'Open' if status_id not mapped
 
-      console.log(`Attempting to update Freshdesk Ticket ${freshdeskTicketId} to status ${freshdeskStatus} (from ClickUp status: ${clickupStatus})`);
+      console.log(`Attempting to update Freshdesk Ticket ${freshdeskTicketId} to status ${freshdeskStatus} (from ClickUp status ID: ${clickupStatusId})`);
 
       // 3. Update Freshdesk
       await axios.put(
