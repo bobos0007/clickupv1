@@ -17,7 +17,6 @@ module.exports = async (req, res) => {
 
   req.on('end', async () => {
     try {
-
       const fullWebhookPayload = JSON.parse(rawBody); // Parse the raw body
       
       // >>> THIS IS THE NEW DEBUG LOGGING LINE <<<
@@ -36,7 +35,6 @@ module.exports = async (req, res) => {
       console.log("Received ClickUp Webhook for Task ID:", taskData.id);
 
       // 1. Extract Freshdesk Ticket ID from 'fields' array using field_id
-      // Replaced placeholder with the actual field_id provided by the user
       const FRESHDESK_CUSTOM_FIELD_ID = "88b9d9b1-b8b7-49ac-ae87-743c76e1e438"; 
       const fdTicketField = taskData.fields?.find(
         (field) => field.field_id === FRESHDESK_CUSTOM_FIELD_ID
@@ -49,17 +47,34 @@ module.exports = async (req, res) => {
       }
 
       // 2. Map ClickUp status_id → Freshdesk status
-      // You NEED to replace 'YOUR_TODO_STATUS_ID', 'YOUR_IN_PROGRESS_STATUS_ID', 'YOUR_DONE_STATUS_ID'
-      // with the actual status_ids from your ClickUp workspace.
+      // Mapped using the status IDs from your provided JSON for "Test Space - Freshdesk"
+      // and the Freshdesk status IDs you just provided.
       const statusMap = {
-        "YOUR_TODO_STATUS_ID": 2,       // Freshdesk: Open
-        "YOUR_IN_PROGRESS_STATUS_ID": 3, // Freshdesk: Pending
-        "YOUR_DONE_STATUS_ID": 4         // Freshdesk: Resolved
-        // Add more mappings if your ClickUp statuses differ or you have more Freshdesk statuses
+        // ClickUp Status IDs from "Test Space - Freshdesk" (id: "90163965231")
+        "p90163965231_LLmr2NNk": 8,       // "ticket created" -> Freshdesk: "Ticket Created" (id: 8)
+        "p90163965231_cF6OeX3T": 3,       // "submitted for review" -> Freshdesk: "Pending" (id: 3)
+        "p90163965231_Llq8o0Uc": 3,       // "under review" -> Freshdesk: "Pending" (id: 3)
+        "p90163965231_uyv7P5Pp": 3,       // "investigation" -> Freshdesk: "Pending" (id: 3)
+        "p90163965231_HFWxpVet": 12,      // "quoted" -> Freshdesk: "Quoted" (id: 12)
+        "p90163965231_HpuoC5BG": 13,      // "accepted" -> Freshdesk: "Accepted" (id: 13)
+        "p90163965231_glhCaY84": 14,      // "please action" -> Freshdesk: "Please Action" (id: 14)
+        "p90163965231_MgsXW8d7": 15,      // "in progress" -> Freshdesk: "In Progress" (id: 15)
+        "p90163965231_f8Cru25U": 16,      // "quality assurance" -> Freshdesk: "Quality Assurance" (id: 16)
+        "p90163965231_kIC6YiUS": 17,      // "awaiting approval" -> Freshdesk: "Awaiting Approval" (id: 17)
+        "p90163965231_yx9ouZ2H": 4,       // "done" -> Freshdesk: "Resolved" (id: 4)
+        "p90163965231_dYVAaXW5": 19,      // "denied" -> Freshdesk: "Denied" (id: 19)
+        "p90163965231_bLuLidsM": 5        // "complete" -> Freshdesk: "Closed" (id: 5)
+        
+        // You can add more mappings for other ClickUp spaces (Personal, Company Space)
+        // if you need to handle tasks from those spaces as well, using their specific IDs.
+        // For example:
+        // "p90161743460_p6926177_l16juwBq": 2, // "to do" from Personal -> Freshdesk: Open
+        // "p90161743460_p6926177_5nEOGIaE": 3, // "in progress" from Personal -> Freshdesk: Pending
+        // "p90161743460_p6926177_g9ScQ4FP": 4, // "completed" from Personal -> Freshdesk: Resolved
       };
       
       const clickupStatusId = taskData.status_id;
-      const freshdeskStatus = statusMap[clickupStatusId] || 2; // Default to 'Open' if status_id not mapped
+      const freshdeskStatus = statusMap[clickupStatusId] || 2; // Default to Freshdesk 'Open' (id: 2) if status_id not mapped
 
       console.log(`Attempting to update Freshdesk Ticket ${freshdeskTicketId} to status ${freshdeskStatus} (from ClickUp status ID: ${clickupStatusId})`);
 
