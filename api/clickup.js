@@ -17,24 +17,109 @@ module.exports = async (req, res) => {
 
   req.on('end', async () => {
     try {
+      // --- Security: X-ClickUp-Signature Verification ---
+      // If you re-introduce signature verification, uncomment and configure this section.
+      // const signature = req.headers["x-clickup-signature"];
+      // const clickupWebhookSecret = process.env.CLICKUP_WEBHOOK_SECRET;
+      // if (!clickupWebhookSecret) {
+      //   console.error("CLICKUP_WEBHOOK_SECRET environment variable is not set.");
+      //   return res.status(500).send("Server Error: Webhook secret not configured.");
+      // }
+      // const calculatedSignature = crypto
+      //   .createHmac("sha256", clickupWebhookSecret)
+      //   .update(rawBody)
+      //   .digest("hex");
+      // if (signature !== calculatedSignature) {
+      //   console.warn("Invalid X-ClickUp-Signature. Received:", signature, "Calculated:", calculatedSignature);
+      //   return res.status(401).send("Unauthorized: Invalid Signature");
+      // }
+      // --- End Security Check ---
+
       const fullWebhookPayload = JSON.parse(rawBody); // Parse the raw body
       
-      // >>> THIS IS THE NEW DEBUG LOGGING LINE <<<
       console.log("--- Full Webhook Payload Received ---", JSON.stringify(fullWebhookPayload, null, 2));
-      // >>> END NEW DEBUG LOGGING LINE <<<
 
       // Access the nested 'payload' object which contains the task data
       const taskData = fullWebhookPayload.payload; 
 
       // Check if taskData is valid before proceeding
-      if (!taskData || !taskData.id) {
-        console.warn("Webhook payload does not contain expected task data structure.");
+      if (!taskData || !taskData.id || !taskData.lists || taskData.lists.length === 0) {
+        console.warn("Webhook payload does not contain expected task data structure (id or lists missing).");
         return res.status(200).send("Ignored: Invalid payload structure");
       }
 
       console.log("Received ClickUp Webhook for Task ID:", taskData.id);
 
-      // 1. Extract Freshdesk Ticket ID from 'fields' array using field_id
+      // Extract the list ID from the task data
+      const listId = taskData.lists[0].id;
+      if (!listId) {
+          console.warn("Could not find list ID in webhook payload for task:", taskData.id);
+          return res.status(200).send("Ignored: List ID not found in payload.");
+      }
+
+      // 1. Fetch list details from ClickUp to get dynamic statuses
+      // This requires CLICKUP_API_TOKEN to be set in Vercel environment variables.
+      const CLICKUP_API_TOKEN = process.env.CLICKUP_API_TOKEN;
+      if (!CLICKUP_API_TOKEN) {
+        console.error("CLICKUP_API_TOKEN environment variable is not set.");
+        return res.status(500).send("Server Error: ClickUp API token not configured.");
+      }
+
+      let clickupListStatuses = [];
+      try {
+        const listResponse = await axios.get(
+          `https://api.clickup.com/api/v2/list/${listId}`,
+          {
+            headers: {
+              'Authorization': CLICKUP_API_TOKEN,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        if (listResponse.data && listResponse.data.statuses) {
+          clickupListStatuses = listResponse.data.statuses;
+          console.log(`Fetched ${clickupListStatuses.length} statuses for List ID: ${listId}`);
+        } else {
+            console.warn(`No statuses found for List ID: ${listId} in ClickUp API response.`);
+        }
+      } catch (clickupApiError) {
+        console.error("Error fetching ClickUp list statuses:", clickupApiError.response?.data || clickupApiError.message);
+        return res.status(500).send("Failed to fetch ClickUp list statuses.");
+      }
+
+
+      // 2. Build the statusMap dynamically based on fetched ClickUp statuses
+      // Map ClickUp status_id to Freshdesk status IDs
+      const freshdeskStatusMappingTable = {
+        "ticket created": 8,       // Freshdesk: "Ticket Created"
+        "submitted for review": 9,   // Freshdesk: "Submitted for Review"
+        "under review": 10,        // Freshdesk: "Under Review"
+        "investigation": 11,       // Freshdesk: "Under Investigation"
+        "quoted": 12,              // Freshdesk: "Quoted"
+        "accepted": 13,            // Freshdesk: "Accepted"
+        "please action": 14,       // Freshdesk: "Please Action"
+        "in progress": 15,         // Freshdesk: "In Progress"
+        "quality assurance": 16,   // Freshdesk: "Quality Assurance"
+        "awaiting approval": 17,   // Freshdesk: "Awaiting Approval"
+        "done": 4,                 // Freshdesk: "Resolved"
+        "denied": 19,              // Freshdesk: "Denied"
+        "complete": 5              // Freshdesk: "Closed"
+        // Add more Freshdesk mappings if needed, using the 'status' string from ClickUp
+        // e.g., "to do": 2, "open": 2, "pending": 3, "resolved": 4, "closed": 5
+      };
+
+      const statusMap = {};
+      clickupListStatuses.forEach(status => {
+          // Use the status string (lowercase for robustness) from ClickUp to find Freshdesk ID
+          const freshdeskId = freshdeskStatusMappingTable[status.status.toLowerCase()];
+          if (freshdeskId !== undefined) {
+              statusMap[status.id] = freshdeskId;
+          }
+      });
+      console.log("Dynamically built statusMap:", statusMap);
+
+
+      // Extract Freshdesk Ticket ID from 'fields' array using field_id
       const FRESHDESK_CUSTOM_FIELD_ID = "88b9d9b1-b8b7-49ac-ae87-743c76e1e438"; 
       const fdTicketField = taskData.fields?.find(
         (field) => field.field_id === FRESHDESK_CUSTOM_FIELD_ID
@@ -46,24 +131,7 @@ module.exports = async (req, res) => {
         return res.status(200).send("No Freshdesk Ticket ID found");
       }
 
-      // 2. Map ClickUp status_id → Freshdesk status
-      // Mapped using the exact ClickUp status IDs you provided for the "New Incoming Tickets" list
-      const statusMap = {
-        "sc901604897170_hXeuKmFa": 8,       // "ticket created" -> Freshdesk: "Ticket Created" (id: 8)
-        "sc901604897170_TSw8mpUA": 9,       // "submitted for review" -> Freshdesk: "Submitted for Review" (id: 9)
-        "sc901604897170_4wr7RNWI": 10,      // "under review" -> Freshdesk: "Under Review" (id: 10)
-        "sc901604897170_aObOJ5Dy": 11,      // "investigation" -> Freshdesk: "Under Investigation" (id: 11)
-        "sc901604897170_6GHlwGYr": 12,      // "quoted" -> Freshdesk: "Quoted" (id: 12)
-        "sc901604897170_b19XgsDM": 13,      // "accepted" -> Freshdesk: "Accepted" (id: 13)
-        "sc901604897170_Do6efWsC": 14,      // "please action" -> Freshdesk: "Please Action" (id: 14)
-        "sc901604897170_Rr2Ryl1v": 15,      // "in progress" -> Freshdesk: "In Progress" (id: 15)
-        "sc901604897170_B8cc60HL": 16,      // "quality assurance" -> Freshdesk: "Quality Assurance" (id: 16)
-        "sc901604897170_9BpWKiMK": 17,      // "awaiting approval" -> Freshdesk: "Awaiting Approval" (id: 17)
-        "sc901604897170_uXKirffs": 4,       // "done" -> Freshdesk: "Resolved" (id: 4)
-        "sc901604897170_HwuQk2Mz": 19,      // "denied" -> Freshdesk: "Denied" (id: 19)
-        "sc901604897170_JVk3Y4Bn": 5        // "complete" -> Freshdesk: "Closed" (id: 5)
-      };
-      
+      // Get the Freshdesk status based on the dynamically built map
       const clickupStatusId = taskData.status_id;
       const freshdeskStatus = statusMap[clickupStatusId] || 2; // Default to Freshdesk 'Open' (id: 2) if status_id not mapped
 
