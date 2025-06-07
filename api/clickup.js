@@ -51,7 +51,8 @@ module.exports = async (req, res) => {
       console.log("Received ClickUp Webhook for Task ID:", taskData.id);
 
       // Extract the list ID from the task data
-      const listId = taskData.lists[0].id;
+      // CORRECTED: Changed .id to .list_id based on the provided payload structure
+      const listId = taskData.lists[0].list_id; 
       if (!listId) {
           console.warn("Could not find list ID in webhook payload for task:", taskData.id);
           return res.status(200).send("Ignored: List ID not found in payload.");
