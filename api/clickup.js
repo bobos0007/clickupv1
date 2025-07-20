@@ -1,14 +1,11 @@
 const axios = require("axios");
 
-// Map ClickUp custom values to Freshdesk type string (built-in field, not custom field)
+// Map ClickUp custom_type values to Freshdesk type strings
 const TYPE_MAP_REVERSE = {
-  "1003": "Make a Request",     // or "Question" or your Freshdesk type value
-  "1001": "Report a Bug",       // or "Incident"
+  "1003": "Make a Request",     // Or "Question"
+  "1001": "Report a Bug",       // Or "Incident"
   "0": "General Enquiry"
 };
-
-// Use your ClickUp custom field ID for ticket type:
-const CLICKUP_TYPE_FIELD_ID = "custom_item_id";
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
@@ -101,16 +98,13 @@ module.exports = async (req, res) => {
       const clickupStatusId = taskData.status_id;
       const freshdeskStatus = statusMap[clickupStatusId] || 2; // Default to 'Open' if not mapped
 
-      // Extract Type from ClickUp fields (custom_item_id)
-      let freshdeskType = undefined;
-      const typeField = taskData.fields?.find(
-        (field) => field.field_id === CLICKUP_TYPE_FIELD_ID
-      );
-      const typeCustomId = typeField ? typeField.value : null;
+      // Extract Type from ClickUp root field 'custom_type'
+      const typeCustomId = taskData.custom_type ? String(taskData.custom_type) : null;
+      let freshdeskType;
       if (typeCustomId && TYPE_MAP_REVERSE[typeCustomId]) {
         freshdeskType = TYPE_MAP_REVERSE[typeCustomId];
       }
-      console.log(`Detected type custom_item_id: ${typeCustomId}, mapped to Freshdesk type: ${freshdeskType}`);
+      console.log(`Detected type custom_type: ${typeCustomId}, mapped to Freshdesk type: ${freshdeskType}`);
 
       // Build Freshdesk update payload
       const fdPayload = { status: freshdeskStatus };
