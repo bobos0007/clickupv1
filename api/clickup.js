@@ -4,7 +4,7 @@ const axios = require("axios");
 const TYPE_MAP_REVERSE = {
   "1003": "Make a Request",     // Or "Question"
   "1001": "Report a Bug",       // Or "Incident"
-  null: "General Enquiry"
+  "": "General Enquiry"
 };
 
 module.exports = async (req, res) => {
