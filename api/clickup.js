@@ -15,7 +15,7 @@ const TYPE_MAP_REVERSE = {
 const normalize = (s) =>
   String(s || "").toLowerCase().trim().replace(/\s+/g, " ");
 
-// Use the EXACT IDs from your Freshdesk field dump
+// Use the EXACT IDs from your Freshdesk status field dump
 const FRESHDESK_STATUS_BY_LABEL = Object.freeze({
   // Primary labels (must match Freshdesk)
   "ticket created": 8,
@@ -42,26 +42,9 @@ const FRESHDESK_STATUS_BY_LABEL = Object.freeze({
   "investigation": 2       // map to Open (no id 11 in Freshdesk)
 });
 
-/**
- * Fetch a ClickUp list (to read its statuses).
- */
-async function fetchClickUpList(listId, token) {
-  const resp = await axios.get(`https://api.clickup.com/api/v2/list/${listId}`, {
-    headers: { Authorization: token, "Content-Type": "application/json" }
-  });
-  return resp.data;
-}
-
-/**
- * Fallback: fetch the task to read its status label directly.
- */
-async function fetchClickUpTask(taskId, token) {
-  const resp = await axios.get(`https://api.clickup.com/api/v2/task/${taskId}`, {
-    headers: { Authorization: token, "Content-Type": "application/json" }
-  });
-  return resp.data;
-}
-
+// -----------------------------
+// Webhook handler
+// -----------------------------
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     console.log("Method Not Allowed:", req.method);
@@ -77,59 +60,22 @@ module.exports = async (req, res) => {
       console.log("--- Full Webhook Payload Received ---", JSON.stringify(fullWebhookPayload, null, 2));
 
       const taskData = fullWebhookPayload.payload;
-      if (!taskData || !taskData.id || !taskData.lists || taskData.lists.length === 0) {
-        console.warn("Webhook payload does not contain expected task data structure (id or lists missing).");
+      if (!taskData || !taskData.id) {
+        console.warn("Invalid payload (missing task id).");
         return res.status(200).send("Ignored: Invalid payload structure");
       }
 
+      // -----------------------------
+      // Env checks
+      // -----------------------------
       const CLICKUP_API_TOKEN = process.env.CLICKUP_API_TOKEN;
       if (!CLICKUP_API_TOKEN) {
         console.error("CLICKUP_API_TOKEN environment variable is not set.");
         return res.status(500).send("Server Error: ClickUp API token not configured.");
       }
-
-      const listIds = taskData.lists.map(l => l.list_id);
-      const clickupStatusId = taskData.status_id;
-
-      // -----------------------------
-      // Resolve the correct list that contains this status_id
-      // -----------------------------
-      let clickupListStatuses = [];
-      let matchedListId = null;
-
-      for (const lid of listIds) {
-        try {
-          const listData = await fetchClickUpList(lid, CLICKUP_API_TOKEN);
-          const statuses = Array.isArray(listData?.statuses) ? listData.statuses : [];
-          if (!statuses.length) continue;
-
-          if (statuses.some(s => s.id === clickupStatusId)) {
-            clickupListStatuses = statuses;
-            matchedListId = lid;
-            break;
-          }
-
-          // Keep a fallback candidate (first non-empty) in case we never find a direct match
-          if (!clickupListStatuses.length) clickupListStatuses = statuses;
-        } catch (e) {
-          console.warn(`Failed to fetch list ${lid}:`, e.response?.data || e.message);
-        }
-      }
-
-      if (!clickupListStatuses.length) {
-        console.warn("Could not fetch any statuses for the task's lists; defaulting to label mapping only.");
-      }
-
-      // -----------------------------
-      // Build statusMap from the matched list's statuses (id -> Freshdesk id)
-      // -----------------------------
-      const statusMap = {};
-      for (const { status, id } of clickupListStatuses) {
-        const key = normalize(status);
-        const freshdeskId = FRESHDESK_STATUS_BY_LABEL[key];
-        if (freshdeskId !== undefined) {
-          statusMap[id] = freshdeskId;
-        }
+      if (!process.env.FRESHDESK_DOMAIN || !process.env.FRESHDESK_API_KEY) {
+        console.error("Freshdesk env vars missing (FRESHDESK_DOMAIN/FRESHDESK_API_KEY).");
+        return res.status(500).send("Server Error: Freshdesk configuration missing.");
       }
 
       // -----------------------------
@@ -142,45 +88,37 @@ module.exports = async (req, res) => {
       const freshdeskTicketId = fdTicketField ? fdTicketField.value : null;
 
       if (!freshdeskTicketId) {
-        console.log("No Freshdesk Ticket ID custom field found or value is empty for task:", taskData.id);
+        console.log("No Freshdesk Ticket ID found for task:", taskData.id);
         return res.status(200).send("No Freshdesk Ticket ID found");
       }
 
       // -----------------------------
-      // Determine Freshdesk Status
-      //   1) Try mapping by status_id using the matched list
-      //   2) If not found, map by status label fetched from ClickUp task
-      //   3) Fallback to Open (2)
+      // Get the task's CURRENT status label from ClickUp
+      // (independent of lists; works when you MOVE tasks)
       // -----------------------------
-      let freshdeskStatus = statusMap[clickupStatusId];
-
-      if (freshdeskStatus === undefined) {
-        // Try to get the label from the matched list first
-        let cuStatusLabel =
-          clickupListStatuses.find(s => s.id === clickupStatusId)?.status;
-
-        if (!cuStatusLabel) {
-          // Fallback to fetching the task to get its current status label
-          try {
-            const cuTask = await fetchClickUpTask(taskData.id, CLICKUP_API_TOKEN);
-            // Try both shapes: cuTask.status.status or cuTask.status
-            cuStatusLabel = cuTask?.status?.status || cuTask?.status || null;
-          } catch (e) {
-            console.warn("Failed to fetch task status label. Falling back to Open:", e.response?.data || e.message);
-          }
-        }
-
-        if (cuStatusLabel) {
-          const fdId = FRESHDESK_STATUS_BY_LABEL[normalize(cuStatusLabel)];
-          if (fdId !== undefined) {
-            freshdeskStatus = fdId;
-          }
-        }
+      let cuStatusLabel = null;
+      try {
+        const cuTaskResp = await axios.get(
+          `https://api.clickup.com/api/v2/task/${taskData.id}`,
+          { headers: { Authorization: CLICKUP_API_TOKEN, "Content-Type": "application/json" } }
+        );
+        // ClickUp can return either { status: { status: "Label", id: ... } } or a flat status string
+        cuStatusLabel = cuTaskResp.data?.status?.status || cuTaskResp.data?.status || null;
+      } catch (e) {
+        console.warn("Failed to fetch ClickUp task for status label:", e.response?.data || e.message);
       }
 
-      if (freshdeskStatus === undefined) {
-        console.warn("Could not map status by id or label; defaulting to Open (2).");
-        freshdeskStatus = 2; // Open
+      // Map to Freshdesk status id
+      let freshdeskStatus = 2; // default Open
+      if (cuStatusLabel) {
+        const mapped = FRESHDESK_STATUS_BY_LABEL[normalize(cuStatusLabel)];
+        if (mapped !== undefined) {
+          freshdeskStatus = mapped;
+        } else {
+          console.warn("No Freshdesk mapping for ClickUp status label:", cuStatusLabel, "-> defaulting to Open (2)");
+        }
+      } else {
+        console.warn("No ClickUp status label retrieved; defaulting to Open (2)");
       }
 
       // -----------------------------
@@ -203,10 +141,7 @@ module.exports = async (req, res) => {
         `https://${process.env.FRESHDESK_DOMAIN}/api/v2/tickets/${freshdeskTicketId}`,
         fdPayload,
         {
-          auth: {
-            username: process.env.FRESHDESK_API_KEY,
-            password: "X"
-          },
+          auth: { username: process.env.FRESHDESK_API_KEY, password: "X" },
           headers: { "Content-Type": "application/json" }
         }
       );
