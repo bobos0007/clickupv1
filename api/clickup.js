@@ -48,7 +48,7 @@ const STATUS_ALIASES = Object.freeze({
   "complete": "closed",
   "denied": "denied by client",
   "investigation": "open",
-  "under review": "under review", // if ClickUp has "Investigation", map to "Open"
+  "under review": 10, // if ClickUp has "Investigation", map to "Open"
 });
 
 // -----------------------------
