@@ -57,30 +57,37 @@ module.exports = async (req, res) => {
         console.error("Error fetching ClickUp list statuses:", clickupApiError.response?.data || clickupApiError.message);
         return res.status(500).send("Failed to fetch ClickUp list statuses.");
       }
+const normalize = (s) =>
+  String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
 
-      // Build Status Mapping
-      const freshdeskStatusMappingTable = {
-        "ticket created": 8,
-        "submitted for review": 9,
-        "under review": 10,
-        "investigation": 11,
-        "quoted": 12,
-        "PLEASE ACTION": 13,
-        "Scheduled": 14,
-        "in progress": 15,
-        "quality assurance": 16,
-        "awaiting approval": 17,
-        "done": 4,
-        "denied": 19,
-        "complete": 5
-      };
-      const statusMap = {};
-      clickupListStatuses.forEach(status => {
-        const freshdeskId = freshdeskStatusMappingTable[status.status.toLowerCase()];
-        if (freshdeskId !== undefined) {
-          statusMap[status.id] = freshdeskId;
-        }
-      });
+// Freshdesk IDs by *lowercased* status label
+const FRESHDESK_STATUS_BY_LABEL = Object.freeze({
+  'ticket created': 8,
+  'submitted for review': 9,
+  'under review': 10,
+  'investigation': 11,
+  'quoted': 12,
+  'please action': 13,      // <-- fixed casing
+  'scheduled': 14,          // <-- fixed casing
+  'in progress': 15,
+  'quality assurance': 16,
+  'awaiting approval': 17,          // if your ClickUp uses this wording
+  'awaiting client approval': 17,   // or this wording (Freshdesk label)
+  'done': 4,
+  'denied': 19,
+  'complete': 5
+});
+const statusMap = {};
+clickupListStatuses.forEach(({ status, id }) => {
+  const key = normalize(status); // e.g., "Please Action" -> "please action"
+  const freshdeskId = FRESHDESK_STATUS_BY_LABEL[key];
+  if (freshdeskId !== undefined) {
+    statusMap[id] = freshdeskId;
+  } else {
+    console.warn('No Freshdesk mapping for ClickUp status:', status);
+  }
+});
+
 
       // Extract Freshdesk Ticket ID (custom field on ClickUp)
       const FRESHDESK_CUSTOM_FIELD_ID = "c6d06740-a69d-4942-8cf2-5b0823d0a806"; 
