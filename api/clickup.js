@@ -65,7 +65,7 @@ module.exports = async (req, res) => {
         "under review": 10,
         "investigation": 11,
         "quoted": 12,
-        "Please Action": 13,
+        "PLEASE ACTION": 13,
         "Scheduled": 14,
         "in progress": 15,
         "quality assurance": 16,
