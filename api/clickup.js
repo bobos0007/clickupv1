@@ -1,38 +1,104 @@
 const axios = require("axios");
 
-// Map ClickUp custom_type values to Freshdesk type strings
+// -----------------------------
+// Helpers & dynamic status fetch
+// -----------------------------
+const normalize = (s) => String(s || "").toLowerCase().trim().replace(/\s+/g, " ");
+
+// Cache to avoid hitting Freshdesk on every webhook within the same runtime
+let FD_STATUS_CACHE = null;
+
+async function fetchFreshdeskStatuses() {
+  if (FD_STATUS_CACHE) return FD_STATUS_CACHE;
+
+  const url = `https://${process.env.FRESHDESK_DOMAIN}/api/v2/ticket_fields`;
+  const { data } = await axios.get(url, {
+    auth: { username: process.env.FRESHDESK_API_KEY, password: "X" },
+    headers: { "Content-Type": "application/json" },
+  });
+
+  const statusField = Array.isArray(data)
+    ? data.find((f) => f.type === "default_status" && f.name === "status")
+    : null;
+
+  if (!statusField || !Array.isArray(statusField.choices)) {
+    throw new Error("Freshdesk status field not found or has no choices");
+  }
+
+  const labelToId = {};
+  let openId = 2; // fallback default if “Open” not found
+
+  for (const ch of statusField.choices) {
+    [ch.label, ch.value, ch.label_for_customers]
+      .filter(Boolean)
+      .forEach((v) => (labelToId[normalize(v)] = ch.id));
+    if (normalize(ch.label) === "open" || normalize(ch.value) === "open") {
+      openId = ch.id;
+    }
+  }
+
+  FD_STATUS_CACHE = { labelToId, openId };
+  return FD_STATUS_CACHE;
+}
+
+// ClickUp → Freshdesk label aliases (only where wording differs)
+const STATUS_ALIASES = Object.freeze({
+  "awaiting approval": "awaiting client approval",
+  "done": "resolved",
+  "complete": "closed",
+  "denied": "denied by client",
+  "investigation": "open",
+  "under review": "under review", // if ClickUp has "Investigation", map to "Open"
+});
+
+// -----------------------------
+// Type mapping (UNCHANGED)
+// -----------------------------
 const TYPE_MAP_REVERSE = {
   "1003": "Make a Request",
   "1001": "Report a Bug",
-  "0": "General Enquiry"
+  "0": "General Enquiry",
 };
 
+// -----------------------------
+// Webhook handler
+// -----------------------------
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     console.log("Method Not Allowed:", req.method);
     return res.status(405).send("Method Not Allowed");
   }
 
-  let rawBody = '';
-  req.on('data', (chunk) => { rawBody += chunk; });
+  let rawBody = "";
+  req.on("data", (chunk) => {
+    rawBody += chunk;
+  });
 
-  req.on('end', async () => {
+  req.on("end", async () => {
     try {
       const fullWebhookPayload = JSON.parse(rawBody);
-      console.log("--- Full Webhook Payload Received ---", JSON.stringify(fullWebhookPayload, null, 2));
-      const taskData = fullWebhookPayload.payload; 
+      console.log(
+        "--- Full Webhook Payload Received ---",
+        JSON.stringify(fullWebhookPayload, null, 2)
+      );
+
+      const taskData = fullWebhookPayload.payload;
       if (!taskData || !taskData.id || !taskData.lists || taskData.lists.length === 0) {
-        console.warn("Webhook payload does not contain expected task data structure (id or lists missing).");
+        console.warn(
+          "Webhook payload does not contain expected task data structure (id or lists missing)."
+        );
         return res.status(200).send("Ignored: Invalid payload structure");
       }
 
-      const listId = taskData.lists[0].list_id; 
+      const listId = taskData.lists[0].list_id;
       if (!listId) {
         console.warn("Could not find list ID in webhook payload for task:", taskData.id);
         return res.status(200).send("Ignored: List ID not found in payload.");
       }
 
+      // -----------------------------
       // Fetch ClickUp List Statuses
+      // -----------------------------
       const CLICKUP_API_TOKEN = process.env.CLICKUP_API_TOKEN;
       if (!CLICKUP_API_TOKEN) {
         console.error("CLICKUP_API_TOKEN environment variable is not set.");
@@ -45,93 +111,95 @@ module.exports = async (req, res) => {
           `https://api.clickup.com/api/v2/list/${listId}`,
           {
             headers: {
-              'Authorization': CLICKUP_API_TOKEN,
-              'Content-Type': 'application/json'
-            }
+              Authorization: CLICKUP_API_TOKEN,
+              "Content-Type": "application/json",
+            },
           }
         );
         if (listResponse.data && listResponse.data.statuses) {
-          clickupListStatuses = listResponse.data.statuses;
+          clickupListStatuses = listResponse.data.statuses; // [{ id, status, ... }, ...]
         }
       } catch (clickupApiError) {
-        console.error("Error fetching ClickUp list statuses:", clickupApiError.response?.data || clickupApiError.message);
+        console.error(
+          "Error fetching ClickUp list statuses:",
+          clickupApiError.response?.data || clickupApiError.message
+        );
         return res.status(500).send("Failed to fetch ClickUp list statuses.");
       }
-const normalize = (s) =>
-  String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
 
-// Freshdesk IDs by *lowercased* status label
-const FRESHDESK_STATUS_BY_LABEL = Object.freeze({
-  'ticket created': 8,
-  'submitted for review': 9,
-  'under review': 10,
-  'investigation': 11,
-  'quoted': 12,
-  'please action': 13,      // <-- fixed casing
-  'scheduled': 14,          // <-- fixed casing
-  'in progress': 15,
-  'quality assurance': 16,
-  'awaiting approval': 17,          // if your ClickUp uses this wording
-  'awaiting client approval': 17,   // or this wording (Freshdesk label)
-  'done': 4,
-  'denied': 19,
-  'complete': 5
-});
-const statusMap = {};
-clickupListStatuses.forEach(({ status, id }) => {
-  const key = normalize(status); // e.g., "Please Action" -> "please action"
-  const freshdeskId = FRESHDESK_STATUS_BY_LABEL[key];
-  if (freshdeskId !== undefined) {
-    statusMap[id] = freshdeskId;
-  } else {
-    console.warn('No Freshdesk mapping for ClickUp status:', status);
-  }
-});
+      // -----------------------------
+      // Build Status Mapping (DYNAMIC)
+      // -----------------------------
+      const { labelToId: fdLabelToId, openId } = await fetchFreshdeskStatuses();
 
+      const statusMap = {};
+      for (const { status, id } of clickupListStatuses) {
+        let key = normalize(status);
+        if (STATUS_ALIASES[key]) key = normalize(STATUS_ALIASES[key]); // apply alias if needed
+        const fdId = fdLabelToId[key];
+        if (fdId !== undefined) {
+          statusMap[id] = fdId; // ClickUp status_id → Freshdesk status id
+        } else {
+          console.warn("No Freshdesk mapping for ClickUp status label:", status);
+        }
+      }
 
-      // Extract Freshdesk Ticket ID (custom field on ClickUp)
-      const FRESHDESK_CUSTOM_FIELD_ID = "c6d06740-a69d-4942-8cf2-5b0823d0a806"; 
+      // -----------------------------
+      // Extract Freshdesk Ticket ID from ClickUp custom field
+      // -----------------------------
+      const FRESHDESK_CUSTOM_FIELD_ID = "c6d06740-a69d-4942-8cf2-5b0823d0a806";
       const fdTicketField = taskData.fields?.find(
         (field) => field.field_id === FRESHDESK_CUSTOM_FIELD_ID
       );
       const freshdeskTicketId = fdTicketField ? fdTicketField.value : null;
 
       if (!freshdeskTicketId) {
-        console.log("No Freshdesk Ticket ID custom field found or value is empty for task:", taskData.id);
+        console.log(
+          "No Freshdesk Ticket ID custom field found or value is empty for task:",
+          taskData.id
+        );
         return res.status(200).send("No Freshdesk Ticket ID found");
       }
 
-      // Get Freshdesk Status from ClickUp Status
+      // -----------------------------
+      // Determine Freshdesk Status from ClickUp Status
+      // -----------------------------
       const clickupStatusId = taskData.status_id;
-      const freshdeskStatus = statusMap[clickupStatusId] || 2;
+      const freshdeskStatus = statusMap[clickupStatusId] ?? openId; // default to “Open” if unmapped
 
-      let typeCustomId = (typeof taskData.custom_type !== "undefined" && taskData.custom_type !== null)
-        ? String(taskData.custom_type)
-        : "0";
+      // -----------------------------
+      // Type logic (UNCHANGED)
+      // -----------------------------
+      let typeCustomId =
+        typeof taskData.custom_type !== "undefined" && taskData.custom_type !== null
+          ? String(taskData.custom_type)
+          : "0";
 
       let freshdeskType = TYPE_MAP_REVERSE[typeCustomId] || "General Enquiry";
-      console.log(`Detected type custom_type: ${typeCustomId}, mapped to Freshdesk type: ${freshdeskType}`);
+      console.log(
+        `Detected type custom_type: ${typeCustomId}, mapped to Freshdesk type: ${freshdeskType}`
+      );
 
-      // Build Freshdesk update payload
+      // -----------------------------
+      // Update Freshdesk ticket
+      // -----------------------------
       const fdPayload = { status: freshdeskStatus, type: freshdeskType };
-
-      // Update Freshdesk
       console.log(`Updating Freshdesk Ticket ${freshdeskTicketId}:`, fdPayload);
+
       await axios.put(
         `https://${process.env.FRESHDESK_DOMAIN}/api/v2/tickets/${freshdeskTicketId}`,
         fdPayload,
         {
           auth: {
             username: process.env.FRESHDESK_API_KEY,
-            password: "X"
+            password: "X",
           },
-          headers: { "Content-Type": "application/json" }
+          headers: { "Content-Type": "application/json" },
         }
       );
 
       console.log("Successfully updated Freshdesk Ticket:", freshdeskTicketId);
       res.status(200).send("Updated Freshdesk");
-
     } catch (error) {
       console.error("Webhook handler error:", error.response?.data || error.message);
       res.status(500).send("Failed to update Freshdesk");
