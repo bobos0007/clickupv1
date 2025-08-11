@@ -65,8 +65,8 @@ module.exports = async (req, res) => {
         "under review": 10,
         "investigation": 11,
         "quoted": 12,
-        "accepted": 13,
-        "please action": 14,
+        "Please Action": 13,
+        "Scheduled": 14,
         "in progress": 15,
         "quality assurance": 16,
         "awaiting approval": 17,
@@ -83,7 +83,7 @@ module.exports = async (req, res) => {
       });
 
       // Extract Freshdesk Ticket ID (custom field on ClickUp)
-      const FRESHDESK_CUSTOM_FIELD_ID = "88b9d9b1-b8b7-49ac-ae87-743c76e1e438"; 
+      const FRESHDESK_CUSTOM_FIELD_ID = "c6d06740-a69d-4942-8cf2-5b0823d0a806"; 
       const fdTicketField = taskData.fields?.find(
         (field) => field.field_id === FRESHDESK_CUSTOM_FIELD_ID
       );
@@ -96,10 +96,8 @@ module.exports = async (req, res) => {
 
       // Get Freshdesk Status from ClickUp Status
       const clickupStatusId = taskData.status_id;
-      const freshdeskStatus = statusMap[clickupStatusId] || 2; // Default to 'Open' if not mapped
+      const freshdeskStatus = statusMap[clickupStatusId] || 2;
 
-      // Extract Type from ClickUp root field 'custom_type'
-      // If null or missing, treat as "0" for "General Enquiry"
       let typeCustomId = (typeof taskData.custom_type !== "undefined" && taskData.custom_type !== null)
         ? String(taskData.custom_type)
         : "0";
