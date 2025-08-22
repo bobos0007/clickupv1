@@ -1,0 +1,10 @@
+{
+    "version": 2,
+    "routes": [
+      {
+        "src": "/clickup/webhook",
+        "dest": "/api/clickup.js"
+      }
+    ]
+  }
+  
