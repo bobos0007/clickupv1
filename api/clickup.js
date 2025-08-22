@@ -1,7 +1,7 @@
 const axios = require("axios");
 
 // -----------------------------
-// Type mapping (UNCHANGED)
+// Type mapping (UNCHANGED) new comments
 // -----------------------------
 const TYPE_MAP_REVERSE = {
   "1003": "Make a Request",
